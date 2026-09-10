@@ -8,16 +8,20 @@ torch.manual_seed(1023)
 torch.set_default_dtype(torch.float64)
 
 
-def run_experiment(mu: float, n_samples: int, batch_size: int):
+def run_experiment(mu: float, batch_size: int, n_trials: int = 10_000):
+    if mu == 0:
+        raise ValueError("Normalized metrics require a nonzero true KL (mu != 0)")
+    if batch_size < 3:
+        raise ValueError("k4 requires a batch size of at least 3")
+    if n_trials < 2:
+        raise ValueError("Standard deviation requires at least 2 trials")
+
     P = torch.distributions.Normal(0.0, 1.0)
     Q = torch.distributions.Normal(mu, 1.0)
 
 
-    # for batch estimation
-    n_trials = 10_000
-
-
-    x = P.sample((n_trials, batch_size)) # size: [10000, 64]
+    # Each row is an independent mini-batch estimate.
+    x = P.sample((n_trials, batch_size))
 
     log_p = P.log_prob(x)
     log_q = Q.log_prob(x)
@@ -28,8 +32,13 @@ def run_experiment(mu: float, n_samples: int, batch_size: int):
 
     b = r - 1.0
 
-    cov_logr_b = ((log_r - log_r.mean()) * (b - b.mean())).mean()
-    var_b = ((b - b.mean())**2).mean()
+    # calculate lambda_star for each minibatch
+
+    mean_log_r = log_r.mean(dim=1, keepdim=True)
+    mean_b = b.mean(dim=1, keepdim=True)
+
+    cov_logr_b = ((log_r - mean_log_r) * (b - mean_b)).mean(dim=1, keepdim=True)
+    var_b = ((b - mean_b)**2).mean(dim=1, keepdim=True)
 
     lambda_star = cov_logr_b/var_b
 
@@ -48,48 +57,64 @@ def run_experiment(mu: float, n_samples: int, batch_size: int):
 
     true_kl = 0.5 * mu**2
 
-    print(f"true KL: {true_kl:.6f}")
+    print(f"mu={mu}, batch size={batch_size}, trials={n_trials:,}, true KL={true_kl:.6f}")
     results = {}
     for name, values in [
         ("k1", k1_batch_estimate),
         ("k2", k2_batch_estimate),
         ("k3", k3_batch_estimate),
         ("k-opt", k_opt_batch_estimate),
-        ("k4", k4)
+        ("kloo", k_loo_batch_estimate)
     ]:
         bias_ratio = ((values.mean() - true_kl) / true_kl).item()
         stdev_ratio = (values.std() / true_kl).item()
-        results[name] = {"bias/true": bias_ratio, "stdev/true": stdev_ratio}
+        rmse_ratio = (
+            torch.sqrt(((values - true_kl)**2).mean())/true_kl
+        ).item()
+
+        results[name] = {"bias/true": bias_ratio, "stdev/true": stdev_ratio, "rmse/true": rmse_ratio}
         print(
             f"{name}: "
             f"bias/true={bias_ratio}, "
             f"stdev/true={stdev_ratio}, "
+            f"rmse/true={rmse_ratio}"
         )
 
     return results
 
 
-def plot_results(experiments, n_samples, output_path):
+def plot_results(experiments, n_trials, output_path):
+    metrics = ("bias/true", "stdev/true", "rmse/true")
     fig, axes = plt.subplots(
-        len(experiments), 2, figsize=(12, 4 * len(experiments)),
+        len(experiments), len(metrics), figsize=(16, 4 * len(experiments)),
         squeeze=False, layout="constrained",
     )
     colors = ["#3274a1", "#e1812c", "#3a923a", "#c03d3e", "#9372b2"]
-    for row, (mu, results) in enumerate(experiments.items()):
-        for column, metric in enumerate(("bias/true", "stdev/true")):
+    markers = ["o", "s", "^", "D", "x"]
+    for row, (mu, batch_results) in enumerate(experiments.items()):
+        batch_sizes = sorted(batch_results)
+        estimators = list(batch_results[batch_sizes[0]])
+        for column, metric in enumerate(metrics):
             ax = axes[row, column]
-            values = [metrics[metric] for metrics in results.values()]
-            bars = ax.bar(list(results), values, color=colors)
-            ax.bar_label(bars, labels=[f"{value:.4g}" for value in values], padding=4)
-            ax.axhline(0, color="black", linewidth=0.8)
+            for name, color, marker in zip(estimators, colors, markers):
+                values = [batch_results[size][name][metric] for size in batch_sizes]
+                ax.plot(batch_sizes, values, label=name, color=color, marker=marker)
+            ax.set_xscale("log", base=2)
+            ax.set_xticks(batch_sizes, labels=[str(size) for size in batch_sizes])
+            if metric == "bias/true":
+                ax.axhline(0, color="black", linewidth=0.8)
+            else:
+                ax.set_yscale("log")
             ax.set_title(f"mu = {mu}, true KL = {0.5 * mu**2:g}")
+            ax.set_xlabel("Mini-batch size")
             ax.set_ylabel(metric)
             ax.set_axisbelow(True)
-            ax.grid(axis="y", alpha=0.25)
+            ax.grid(alpha=0.25)
             ax.margins(y=0.2)
             ax.spines[["top", "right"]].set_visible(False)
+            ax.legend(fontsize=8)
 
-    fig.suptitle(f"Gaussian KL estimators ({n_samples:,} samples)")
+    fig.suptitle(f"Gaussian KL estimators ({n_trials:,} independent trials per mini-batch size)")
     fig.savefig(output_path, dpi=200)
     print(f"Chart saved to {output_path}")
     plt.show()
@@ -108,16 +133,16 @@ def k_leave_one_out(log_r, r, eps=1e-12):
     a = -log_r
     c = r - 1.0
 
-    n = a.numel()
+    n = a.shape[1]
 
     if n < 3:
         raise ValueError("k4 requires at least 3 samples")
 
-    # Sufficient statistics over full batch
-    sum_a = a.sum()
-    sum_c = c.sum()
-    sum_ac = (a * c).sum()
-    sum_c2 = (c ** 2).sum()
+    # stats over batch
+    sum_a = a.sum(dim=1, keepdim=True)
+    sum_c = c.sum(dim=1, keepdim=True)
+    sum_ac = (a * c).sum(dim=1, keepdim=True)
+    sum_c2 = (c ** 2).sum(dim=1, keepdim=True)
 
     # Number of observations in each leave-one-out set
     m = n - 1
@@ -160,11 +185,15 @@ def k_leave_one_out(log_r, r, eps=1e-12):
 
 
 if __name__ == "__main__":
-    n_samples = 1_000_000
+    n_trials = 10_000
+    batch_sizes = [2**power for power in range(2, 9)]
     experiments = {
-        mu: run_experiment(mu=mu, n_samples=n_samples)
+        mu: {
+            batch_size: run_experiment(mu=mu, batch_size=batch_size, n_trials=n_trials)
+            for batch_size in batch_sizes
+        }
         for mu in (0.1, 1)
     }
     plot_results(
-        experiments, n_samples, Path(__file__).with_name("gaussian_metrics.png")
+        experiments, n_trials, Path(__file__).with_name("gaussian_batch_metrics.png")
     )
