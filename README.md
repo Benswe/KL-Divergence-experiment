@@ -1,8 +1,38 @@
-# Is Schulman's k3 KL estimator actually variance-optimal?
+# Adaptive Control Variates for KL Estimation
 
-Is λ = 1 special?
-Schulman's k3 estimator (http://joschu.net/blog/kl-approx.html) uses 
-a fixed control-variate coefficient of 1 to obtain an unbiased, nonnegative, low-variance Monte Carlo
-estimate of KL divergence. This project investigates how close this choice is the variance-optimal 
-coefficient across across increasing policy shifts and wheter the coefficient can be estimated
-online. 
+## Motivation
+
+## Background
+- KL definition
+
+- k1
+
+- k2
+
+- k3
+
+- Why E[r - 1] = 0
+
+
+## Optimal Control Variate
+- Define k_lambda
+
+- Minimize variance
+
+- Derive lambda_star
+
+## Leave-One-Out Estimator
+- Why estimating lambda on same samples is potentially problematic
+- k_LOO idea
+
+## Experiments 
+- Gaussian setup
+- mu sweep
+- batch-size sweep
+
+
+## Results
+
+
+
+## Discussion
