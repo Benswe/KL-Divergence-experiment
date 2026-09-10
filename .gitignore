@@ -1,0 +1,26 @@
+# Track experiment code, documentation, and generated graphs.
+*
+!*/
+!.gitignore
+!README.md
+!gaussian.py
+!*.png
+!*.jpg
+!*.jpeg
+!*.svg
+!*.pdf
+!*.eps
+!*.webp
+
+# Exclude local environments and caches, including any images inside them.
+.venv/
+venv/
+env/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.matplotlib/
+.idea/
+.vscode/
